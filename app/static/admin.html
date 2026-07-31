@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Corpus admin · Document Search Platform</title>
+<!--
+  ⚠️ ONE self-contained file. No CDN, no external stylesheet, no webfont.
+
+  This page exists to curate a corpus that may be confidential, and it is served
+  by the same backend that holds it. A single external request from here — a font,
+  an icon set, an analytics beacon — would mean a third party learning that this
+  deployment exists and, through a referrer, something about what is on it. It
+  also means the page still works on a machine with no internet at all, which is
+  how the stack is demonstrated.
+-->
+<style>
+  :root {
+    --bg: #fbfbfa; --fg: #1c1c1a; --muted: #6b6b66;
+    --line: #e2e1dc; --card: #ffffff; --accent: #7a5c2e;
+    --ok: #2f6b3f; --warn: #8a5a00; --bad: #8a2f2f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16161a; --fg: #e8e7e3; --muted: #9a9a94;
+      --line: #2c2c31; --card: #1d1d22; --accent: #c9a468;
+      --ok: #6fbf85; --warn: #d9a441; --bad: #d97070;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2rem 1.25rem 4rem; background: var(--bg); color: var(--fg);
+    font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 62rem; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin: 0 0 .25rem; letter-spacing: -.01em; }
+  .sub { color: var(--muted); margin: 0 0 2rem; font-size: .92rem; }
+  section {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 10px; padding: 1.25rem; margin-bottom: 1.5rem;
+  }
+  h2 { font-size: .78rem; text-transform: uppercase; letter-spacing: .09em;
+       color: var(--muted); margin: 0 0 1rem; font-weight: 600; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: .9rem; }
+  label { display: block; font-size: .8rem; color: var(--muted); margin-bottom: .3rem; }
+  .req::after { content: " *"; color: var(--accent); }
+  input, select {
+    width: 100%; padding: .5rem .6rem; background: var(--bg); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: .9rem;
+  }
+  input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button {
+    margin-top: 1rem; padding: .55rem 1.1rem; border: 1px solid var(--accent);
+    background: var(--accent); color: #fff; border-radius: 6px; font: inherit;
+    font-weight: 600; cursor: pointer;
+  }
+  button[disabled] { opacity: .55; cursor: not-allowed; }
+  button.ghost { background: none; color: var(--muted); border-color: var(--line);
+                 margin: 0; padding: .28rem .6rem; font-size: .82rem; font-weight: 500; }
+  .tablewrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+  th { text-align: left; font-size: .72rem; text-transform: uppercase; letter-spacing: .07em;
+       color: var(--muted); border-bottom: 1px solid var(--line); padding: 0 .6rem .5rem 0; }
+  td { padding: .55rem .6rem .55rem 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .pill { display: inline-block; padding: .1rem .5rem; border-radius: 999px;
+          font-size: .74rem; font-weight: 600; border: 1px solid currentColor; }
+  .pill.running { color: var(--warn); } .pill.completed { color: var(--ok); }
+  .pill.failed { color: var(--bad); } .pill.duplicate { color: var(--muted); }
+  #status { margin-top: 1rem; font-size: .88rem; }
+  #status:empty { display: none; }
+  .empty { color: var(--muted); font-size: .88rem; padding: .8rem 0; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Corpus admin</h1>
+  <p class="sub">Upload documents and watch ingestion. Progress is read from
+     <code>ingestion_runs</code> in Postgres — the same record used for reproducibility.</p>
+
+  <section>
+    <h2>Add a document</h2>
+    <form id="upload">
+      <div class="grid">
+        <div><label class="req" for="file">PDF</label><input id="file" type="file" accept="application/pdf" required></div>
+        <div><label class="req" for="collection">Collection</label><input id="collection" value="corpus" required></div>
+        <div><label for="title">Title</label><input id="title" placeholder="overrides the generated title"></div>
+        <div><label for="effective_date">Effective date</label><input id="effective_date" type="date"></div>
+        <div><label for="confidentiality">Confidentiality</label>
+          <select id="confidentiality">
+            <option value="">(default: internal)</option>
+            <option>public</option><option>internal</option><option>confidential</option>
+          </select></div>
+        <div style="grid-column: 1 / -1">
+          <label for="description">What this document covers</label>
+          <input id="description" placeholder="feeds the corpus description the planner uses to judge scope">
+        </div>
+      </div>
+      <button type="submit" id="submit">Upload and ingest</button>
+      <div id="status"></div>
+    </form>
+  </section>
+
+  <section>
+    <h2>Indexed documents</h2>
+    <div class="tablewrap">
+      <table>
+        <thead><tr>
+          <th>Title</th><th>File</th><th>Collection</th><th class="num">Chunks</th><th>Ingested</th><th></th>
+        </tr></thead>
+        <tbody id="docs"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+async function loadDocuments() {
+  const body = $("docs");
+  try {
+    const res = await fetch("/documents");
+    const { documents } = await res.json();
+    if (!documents.length) {
+      body.innerHTML = '<tr><td colspan="6" class="empty">Nothing indexed yet.</td></tr>';
+      return;
+    }
+    body.innerHTML = documents.map(d => `
+      <tr>
+        <td>${esc(d.title || "—")}</td>
+        <td><code>${esc(d.source_file)}</code></td>
+        <td>${esc(d.collection)}</td>
+        <td class="num">${d.chunk_count}</td>
+        <td>${esc((d.ingested_at || "").slice(0, 16).replace("T", " "))}</td>
+        <td><button class="ghost" data-id="${esc(d.id)}">Delete</button></td>
+      </tr>`).join("");
+  } catch (err) {
+    body.innerHTML = `<tr><td colspan="6" class="empty">Could not load documents: ${esc(err.message)}</td></tr>`;
+  }
+}
+
+$("docs").addEventListener("click", async (event) => {
+  const id = event.target.dataset?.id;
+  if (!id || !confirm("Delete this document and all of its chunks?")) return;
+  await fetch(`/documents/${id}`, { method: "DELETE" });
+  loadDocuments();
+});
+
+// Polls the run record rather than holding a connection open. Ingestion takes
+// minutes; nothing here should depend on a tab staying focused.
+async function pollRun(runId) {
+  const status = $("status");
+  while (true) {
+    await new Promise(r => setTimeout(r, 2000));
+    const res = await fetch(`/ingestion-runs/${runId}`);
+    if (!res.ok) return;
+    const run = await res.json();
+    status.innerHTML =
+      `<span class="pill ${esc(run.status)}">${esc(run.status)}</span> ` +
+      `parsed ${run.documents_parsed} · chunks ${run.chunks_created} · preambles ${run.preambles_generated}` +
+      (run.error ? ` — ${esc(run.error)}` : "");
+    if (run.status !== "running") { loadDocuments(); return; }
+  }
+}
+
+$("upload").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = $("submit"), status = $("status");
+  const file = $("file").files[0];
+  if (!file) return;
+
+  const form = new FormData();
+  form.append("file", file);
+  form.append("collection", $("collection").value);
+  for (const field of ["title", "description", "effective_date", "confidentiality"]) {
+    if ($(field).value) form.append(field, $(field).value);
+  }
+
+  button.disabled = true;
+  status.textContent = "Uploading…";
+  try {
+    const res = await fetch("/documents", { method: "POST", body: form });
+    const data = await res.json();
+    if (res.status === 200 && data.status === "duplicate") {
+      status.innerHTML = `<span class="pill duplicate">duplicate</span> already indexed as <code>${esc(data.source_file)}</code> — nothing queued.`;
+      loadDocuments();
+    } else if (res.status === 202) {
+      status.innerHTML = `<span class="pill running">queued</span> run <code>${esc(data.ingestion_run_id)}</code>`;
+      pollRun(data.ingestion_run_id);
+    } else {
+      status.textContent = data.detail || `Upload failed (${res.status})`;
+    }
+  } catch (err) {
+    status.textContent = `Upload failed: ${err.message}`;
+  } finally {
+    button.disabled = false;
+  }
+});
+
+loadDocuments();
+</script>
+</body>
+</html>

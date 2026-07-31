@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environment
+.env
+
+# Corpus and derived artefacts.
+# Documents stay on the host and never enter a build layer or a registry —
+# confidential corpora must not be committed. Fixtures under tests/ ARE committed.
+data/raw/*
+data/processed/*
+data/preambles/*
+!data/**/.gitkeep
+
+# Internal planning. The epic/story/task breakdown and Gantt charts guide the
+# build but are not part of the submission — deliverable 6.3 asks for design
+# documentation, not a work plan. Everything else under doc/ IS submitted.
+doc/delivery/
+
+# OS
+.DS_Store
+requirements/

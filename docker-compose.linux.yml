@@ -1,0 +1,37 @@
+# Linux overlay.  Use with:  docker compose -f docker-compose.yml -f docker-compose.linux.yml up -d
+#
+# ⚠️ The base file's note says this explicitly: on Docker Desktop / OrbStack for
+# macOS, `host.docker.internal` is provided natively and routes to the real host,
+# and adding `host-gateway` there BREAKS it. On native Linux the reverse holds —
+# the name does not exist at all, so containers cannot reach the natively-run
+# Ollama without this mapping.
+#
+# The MTU cap in the base file is an OrbStack tunnel workaround and is harmless
+# here; it is left alone rather than special-cased, since 1400 costs nothing on
+# an ordinary Linux bridge.
+services:
+  backend:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # ⚠️ Give the container the GPU.
+    #
+    # Without this, `torch.cuda.is_available()` is False inside the container and
+    # the cross-encoder runs on CPU — measured, with a Tesla T4 sitting at 0%
+    # utilisation. It cost ~2.2 GB of system RAM on a 16 GB box that was already
+    # thrashing hard enough to make sshd unresponsive.
+    #
+    # The models themselves are NOT affected: Ollama runs natively on the host
+    # and has always used the GPU. This is only about the re-ranker, which lives
+    # inside the application rather than in Ollama — the one place the split
+    # between "Ollama serves the models" and "the app serves everything else"
+    # leaks a GPU dependency into the container.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+  worker:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

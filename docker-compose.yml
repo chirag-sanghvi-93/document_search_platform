@@ -1,0 +1,250 @@
+# Six containers. Ollama is NOT among them — see the note at the bottom.
+#
+# `backend` and `worker` are the same image with different commands.
+# `data/` is bind-mounted identically into both: the API writes an uploaded file
+# and the worker reads it, so a path mismatch surfaces as a FileNotFoundError
+# inside Docling on a file that was demonstrably just written.
+
+x-backend-image: &backend-image
+  # An explicit, shared image name. Without it Compose derives a name per service
+  # and builds the SAME Dockerfile twice — once as ...-backend, once as ...-worker —
+  # which doubles build time and lets the two drift apart.
+  image: document-search-platform:local
+  build:
+    context: .
+    dockerfile: Dockerfile
+    # ⚠️ Build on the HOST network stack.
+    #
+    # The MTU note at the bottom of this file explains why container-to-host
+    # traffic needs an MTU below 1500 on OrbStack: large responses hang until the
+    # client times out. That fix applies to the runtime network — BuildKit uses
+    # its own, at the default MTU, so the same failure reappeared during `uv
+    # sync` as `Failed to download aiohttp: request failed after 3 retries in
+    # 130.2s`, while the identical fetch from the host took 0.2s.
+    #
+    # Using the host stack sidesteps the tunnel entirely for build-time
+    # downloads, which are the largest transfers this project makes.
+    network: host
+    args:
+      # ⚠️ These are not optional in any meaningful sense, and leaving them unset
+      # was a real defect: the image built with NO extras, so the running backend
+      # had no `sentence-transformers` and therefore **no cross-encoder and no
+      # score floor**. Retrieval silently degraded to fusion order, which means
+      # the system could no longer return an empty result — and an empty result
+      # is the entire mechanism behind declining rather than confabulating.
+      #
+      # It was invisible from outside: /health/ready reported 200, answers came
+      # back fluent and cited, and the only trace was one WARNING at startup. The
+      # container ran that way for 39 hours.
+      #
+      # The Dockerfile's per-epic install plan was sound while epics were landing;
+      # what was missing was anything that failed when an epic finished and its
+      # extra was never added here.
+      EXTRAS: "--extra ingest --extra retrieval --extra observability --extra agents --extra evaluation"
+  environment: &backend-env
+    DB__HOST: postgres
+    DB__PORT: "5432"
+    DB__USER: rag
+    DB__PASSWORD: rag
+    DB__NAME: rag
+    # Containers on macOS cannot reach the Metal GPU, so Ollama runs on the host.
+    OLLAMA__HOST: http://host.docker.internal:11434
+    PHOENIX__ENDPOINT: http://phoenix:6006
+    PHOENIX__OTLP_ENDPOINT: http://phoenix:6006/v1/traces
+    CELERY__BROKER_URL: redis://redis:6379/0
+    LOG_LEVEL: INFO
+    # Crew.AI on. If the image were ever built without `--extra agents`, the read
+    # path degrades to direct model calls and /health/ready says so — it no
+    # longer turns every request into a 500. See `crewai_available`.
+    AGENTS__USE_CREWAI: "true"
+    # Set explicitly rather than relying on $HOME, which differs by base image
+    # and silently relocates the cache when it changes.
+    HF_HOME: /opt/hf-cache
+  volumes:
+    - ./data:/app/data
+    # ⚠️ The cross-encoder weights (~2.2 GB) live here. Without a volume they
+    # land in the container's writable layer and are re-downloaded from
+    # HuggingFace on every `up --build` — which turns a rebuild into a 2 GB
+    # download, and makes the stack unusable offline or on a metered connection.
+    - hfcache:/opt/hf-cache
+  # ⚠️ Do NOT add `extra_hosts: host.docker.internal:host-gateway` here.
+  #
+  # Docker Desktop (macOS/Windows) provides host.docker.internal natively, and it
+  # routes to the real host. `host-gateway` resolves to the Linux VM's bridge
+  # instead, which is NOT the host — connections are refused, and overriding the
+  # native mapping breaks an otherwise working setup.
+  #
+  # On native Linux the reverse is true: host.docker.internal does not exist and
+  # the extra_hosts line IS required. Add it there, not here.
+
+services:
+  # ⚠️ Changing the PostgreSQL MAJOR version here is not a drop-in edit. A data
+  # directory initialised by pg16 makes a pg17 server exit with
+  # "database files are incompatible with server" — the volume must be dumped and
+  # restored, or wiped. Pinned deliberately for that reason.
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: rag
+      POSTGRES_DB: rag
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag -d rag"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    ports:
+      - "6006:6006"
+    volumes:
+      - phoenixdata:/mnt/data
+    environment:
+      PHOENIX_WORKING_DIR: /mnt/data
+
+  backend:
+    <<: *backend-image
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    <<: *backend-image
+    # Concurrency 1 on the ingestion queue is load-bearing: the pipeline batches
+    # by model, and two concurrent runs reintroduce the model thrash that batching
+    # exists to prevent — from outside the pipeline, where it cannot be detected.
+    command: >
+      celery -A app.tasks.celery_app worker
+      --loglevel=INFO
+      --queues=ingestion,default
+      --concurrency=1
+      --beat
+    # Overrides the image's HTTP healthcheck, which the worker can never satisfy:
+    # it runs Celery, not uvicorn, so probing :8000 always fails. Ask Celery instead.
+    # CMD-SHELL, not CMD: the exec form does no variable expansion, so $HOSTNAME
+    # would be passed to Celery literally and no node would ever reply.
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.tasks.celery_app inspect ping -d celery@$$HOSTNAME"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  openwebui:
+    # Pinned, not :main. The design's open questions — whether this version
+    # renders reasoning blocks collapsed, whether it honours raw HTML in markdown
+    # — are answered by verification against a specific image. A moving tag means
+    # the answers expire silently, and the first sign is a demonstration where
+    # citations render as literal <details> tags.
+    image: ghcr.io/open-webui/open-webui:v0.6.5
+    ports:
+      - "3000:8080"
+    environment:
+      # Point at our backend as an OpenAI-compatible host.
+      OPENAI_API_BASE_URL: http://backend:8000/v1
+      OPENAI_API_KEY: not-used
+      # Explicit: ENABLE_OLLAMA_API is off above, and leaving the OpenAI side
+      # to a default would make the only working connection implicit.
+      ENABLE_OPENAI_API: "true"
+
+      # ---- the lockdown ------------------------------------------------------
+      #
+      # ⚠️ The first group is the one that is embarrassing to discover live.
+      # This interface is perfectly capable of doing a mediocre job of exactly
+      # what this backend does — its own extractor, chunker and vector store —
+      # and NOTHING in the output signals which path an answer took. A whole
+      # demonstration could run on the wrong pipeline without anyone noticing.
+      ENABLE_RAG_WEB_SEARCH: "false"
+      ENABLE_WEB_SEARCH: "false"
+      ENABLE_RAG_LOCAL_WEB_FETCH: "false"
+      # File upload in chat: a user's PDF would enter ITS index, and this
+      # pipeline would never see the document being asked about. Corpus
+      # administration is an operator task, served at the backend's /admin.
+      USER_PERMISSIONS_CHAT_FILE_UPLOAD: "false"
+
+      # Would reach the model host directly and skip every agent.
+      ENABLE_OLLAMA_API: "false"
+      ENABLE_DIRECT_CONNECTIONS: "false"
+
+      # ⚠️ These fire EXTRA model requests the user never asked for — to name a
+      # chat, tag it, autocomplete it. Against an ordinary chat model that is a
+      # cheap side call. Against this backend each one is a full agentic run:
+      # ~30 seconds of planning, retrieval and verification, and — because
+      # conversation identity derives from the first user message — a spurious
+      # conversation written to memory alongside the real one.
+      ENABLE_TITLE_GENERATION: "false"
+      ENABLE_TAGS_GENERATION: "false"
+      ENABLE_AUTOCOMPLETE_GENERATION: "false"
+      ENABLE_RETRIEVAL_QUERY_GENERATION: "false"
+      ENABLE_SEARCH_QUERY_GENERATION: "false"
+      ENABLE_EVALUATION_ARENA_MODELS: "false"
+
+      # Single-user, localhost-bound demonstration; no login wall in the way.
+      WEBUI_AUTH: "false"
+    volumes:
+      - openwebuidata:/app/backend/data
+    depends_on:
+      - backend
+
+# ⚠️ MTU set below the 1500 default, deliberately.
+#
+# On this host (OrbStack), the tunnel between a container and natively-run host
+# services has a lower real capacity than the 1500 the container's interface
+# advertises, and the tunnel drops oversized packets silently rather than
+# fragmenting them or signalling "too big, resend smaller" (broken Path MTU
+# Discovery). The symptom is not a clean failure: small responses succeed and
+# larger ones hang until the client's own timeout gives up.
+#
+# Confirmed directly: with the default MTU, an Ollama call returning ~1.3 KB
+# (`/api/tags`) hung for 15s+ with zero bytes received, while a ~20-byte call
+# (`/api/version`) returned in under a millisecond, every time. Capping the
+# container's MTU to 1400 means it never generates a packet the tunnel can't
+# carry, and the same call returns in ~30ms.
+#
+# Only container-to-HOST traffic crosses this tunnel — Postgres, Redis and
+# Phoenix are container-to-container and were never affected.
+networks:
+  default:
+    driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: "1400"
+
+volumes:
+  hfcache:
+  pgdata:
+  phoenixdata:
+  openwebuidata:
+
+# Ollama is deliberately outside this file.
+#
+# Containers on macOS cannot reach the Metal GPU, so a containerised model host
+# would run CPU-only — unusable for the per-chunk work in ingestion. Install it
+# natively and run `make models`.
+#
+# On Linux with a GPU the constraint does not apply, and Ollama can join the stack
+# as an ordinary service. That is a one-service change, not a rewrite.

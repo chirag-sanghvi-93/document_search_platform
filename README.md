@@ -74,10 +74,7 @@ Asking the agentic-rag model questions grounded in the ingested corpus — a
 direct answer with citations, an honest decline on a question the document
 never actually defines, and a follow-up that stays in the same conversation.
 
-<video src="https://raw.githubusercontent.com/chirag-sanghvi-93/document_search_platform/master/doc/media/demo-03-chat.mp4" controls width="900">
-  Your browser cannot render this video inline — download it directly:
-  <a href="doc/media/demo-03-chat.mp4">doc/media/demo-03-chat.mp4</a>.
-</video>
+[![Click to watch the chat demo](doc/media/demo-03-thumb.png)](doc/media/demo-03-chat.mp4)
 
 ## Quick start
 

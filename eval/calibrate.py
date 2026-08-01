@@ -1,4 +1,4 @@
-"""E10-S6 · Threshold calibration, and E10-S7 · noise floor and ablations.
+"""Threshold calibration, and noise floor and ablations.
 
 ⚠️ `keep_floor` decides whether the system can refuse at all, and until now it
 has been the design's guess: 0.3, written before anything ran and never fitted.
@@ -164,7 +164,7 @@ async def calibrate(session: Session, *, settings: Settings, collection: str) ->
 
 
 def render(result: Calibration) -> str:
-    lines = ["\n## Threshold calibration  (E10-S6) and noise floor (E10-S7)"]
+    lines = ["\n## Threshold calibration and noise floor"]
     lines.append(
         f"  noise ceiling          {result.noise_ceiling:.3f}   highest score nonsense reached"
     )

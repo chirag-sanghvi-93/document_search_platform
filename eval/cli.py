@@ -158,8 +158,8 @@ async def _main(collection: str, out: Path | None, skip_ragas: bool = False) -> 
         ragas_report = ragas_metrics.score(samples, settings)
     print(ragas_metrics.render(ragas_report))
 
-    # ⚠️ E10-S6/S7 last, because it answers a question the numbers above raise:
-    # every decline rate rests on `keep_floor`, which has never been fitted.
+    # ⚠️ Calibration runs last, because it answers a question the numbers above
+    # raise: every decline rate rests on `keep_floor`, which has never been fitted.
     cal = None
     if not skip_ragas:
         with get_session() as session:

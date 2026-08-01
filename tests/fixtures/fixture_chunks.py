@@ -50,9 +50,9 @@ class FixtureChunk:
     def chunk_id(self) -> str:
         """Deterministic — position within a fixed fake document, nothing else.
 
-        Real chunk ids (once E4 exists) derive from an actual file hash; here the
-        `doc_hash` values below stand in for that, chosen to be stable and
-        obviously synthetic (`fx-...`) rather than colliding with anything real.
+        Real chunk ids derive from an actual file hash; here the `doc_hash`
+        values below stand in for that, chosen to be stable and obviously
+        synthetic (`fx-...`) rather than colliding with anything real.
         """
         return f"{self.doc_hash}__{self.position:03d}"
 
@@ -60,7 +60,7 @@ class FixtureChunk:
     def embedding_text(self) -> str:
         """Heading path + text — approximates what the real contextual
         preamble would produce, without a model call. Good enough for
-        retrieval fixtures; not a substitute for the real thing in E4."""
+        retrieval fixtures; not a substitute for the real ingestion pipeline."""
         return f"{self.heading_path}: {self.display_text}"
 
 

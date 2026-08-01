@@ -579,35 +579,49 @@ async def verify(
     prompt = prompts["verifier"]
     rendered = prompt.render(draft=draft, passages=_format_passages(passages, numbered=True))
 
-    try:
-        raw = await _generate(rendered, settings.verifier_model, settings)
-        if call_log:
-            call_log.record("verifier")
-        data = _extract_json(raw)
-        verified = str(data.get("verified_answer") or "").strip()
-        if not verified:
-            raise AgentError("verifier returned no answer")
-        return AgentOutcome(
-            value=Verification(
-                verified_answer=verified,
-                claims_retracted=int(data.get("claims_retracted") or 0),
-                claims_hedged=int(data.get("claims_hedged") or 0),
-            ),
-            model_calls=1,
-        )
-    except (AgentError, httpx.HTTPError, ValueError) as exc:
-        logger.warning("verifier failed (%s); returning draft marked unverified", exc)
-        # ⚠️ Marked in the ANSWER TEXT, not only on the span. A reader must not
-        # be shown an unverified answer that looks identical to a verified one.
-        return AgentOutcome(
-            value=Verification(
-                verified_answer=f"{draft}\n\n_(This answer could not be verified.)_",
-                unverified=True,
-            ),
-            degraded=True,
-            reason=f"verifier: {type(exc).__name__}",
-            model_calls=1,
-        )
+    # ⚠️ One retry on a fresh sample before degrading. `verifier_model` is
+    # deliberately not a reasoning model (see the docstring above), and a small
+    # non-reasoning model occasionally emits JSON with a syntax slip — a missing
+    # comma, an unescaped quote — that `strict=False` does not paper over.
+    # Confirmed live: a correct, well-cited answer was marked "could not be
+    # verified" purely because of a malformed-JSON parse error, not because
+    # anything about the answer was actually unsupported. A second sample is
+    # cheap relative to showing the reader a false unverified flag.
+    last_exc: Exception | None = None
+    calls = 0
+    for _attempt in range(2):
+        try:
+            raw = await _generate(rendered, settings.verifier_model, settings)
+            calls += 1
+            if call_log:
+                call_log.record("verifier")
+            data = _extract_json(raw)
+            verified = str(data.get("verified_answer") or "").strip()
+            if not verified:
+                raise AgentError("verifier returned no answer")
+            return AgentOutcome(
+                value=Verification(
+                    verified_answer=verified,
+                    claims_retracted=int(data.get("claims_retracted") or 0),
+                    claims_hedged=int(data.get("claims_hedged") or 0),
+                ),
+                model_calls=calls,
+            )
+        except (AgentError, httpx.HTTPError, ValueError) as exc:
+            last_exc = exc
+
+    logger.warning("verifier failed (%s); returning draft marked unverified", last_exc)
+    # ⚠️ Marked in the ANSWER TEXT, not only on the span. A reader must not
+    # be shown an unverified answer that looks identical to a verified one.
+    return AgentOutcome(
+        value=Verification(
+            verified_answer=f"{draft}\n\n_(This answer could not be verified.)_",
+            unverified=True,
+        ),
+        degraded=True,
+        reason=f"verifier: {type(last_exc).__name__}",
+        model_calls=calls,
+    )
 
 
 # ------------------------------------------------------------------ summarizer
@@ -810,38 +824,49 @@ async def verify_with_crew(
         draft=draft, passages=_format_passages(passages, numbered=True)
     )
 
-    try:
-        llm = crew_module.build_llm(settings.verifier_model, settings)
-        agent = crew_module.verifier_agent(prompts, llm)
-        raw = await anyio.to_thread.run_sync(
-            crew_module.run_task,
-            agent,
-            rendered,
-            "A JSON object with keys: verified_answer, claims_retracted, claims_hedged.",
-        )
-        if call_log:
-            call_log.record("verifier")
+    # ⚠️ One retry on a fresh sample before degrading — see the direct path's
+    # `verify()` for why: a small non-reasoning model occasionally emits
+    # syntactically broken JSON, and that is a generation glitch, not a finding
+    # that the answer is unsupported. Confirmed live via a crew-verifier failure
+    # ("malformed JSON: Expecting ',' delimiter") on an otherwise correct answer.
+    last_exc: Exception | None = None
+    calls = 0
+    for _attempt in range(2):
+        try:
+            llm = crew_module.build_llm(settings.verifier_model, settings)
+            agent = crew_module.verifier_agent(prompts, llm)
+            raw = await anyio.to_thread.run_sync(
+                crew_module.run_task,
+                agent,
+                rendered,
+                "A JSON object with keys: verified_answer, claims_retracted, claims_hedged.",
+            )
+            calls += 1
+            if call_log:
+                call_log.record("verifier")
 
-        data = _extract_json(raw)
-        verified = str(data.get("verified_answer") or "").strip()
-        if not verified:
-            raise AgentError("crew verifier returned no answer")
-        return AgentOutcome(
-            value=Verification(
-                verified_answer=verified,
-                claims_retracted=int(data.get("claims_retracted") or 0),
-                claims_hedged=int(data.get("claims_hedged") or 0),
-            ),
-            model_calls=1,
-        )
-    except Exception as exc:
-        logger.warning("crew verifier failed (%s); returning draft marked unverified", exc)
-        return AgentOutcome(
-            value=Verification(
-                verified_answer=f"{draft}\n\n_(This answer could not be verified.)_",
-                unverified=True,
-            ),
-            degraded=True,
-            reason=f"crew-verifier: {type(exc).__name__}",
-            model_calls=1,
-        )
+            data = _extract_json(raw)
+            verified = str(data.get("verified_answer") or "").strip()
+            if not verified:
+                raise AgentError("crew verifier returned no answer")
+            return AgentOutcome(
+                value=Verification(
+                    verified_answer=verified,
+                    claims_retracted=int(data.get("claims_retracted") or 0),
+                    claims_hedged=int(data.get("claims_hedged") or 0),
+                ),
+                model_calls=calls,
+            )
+        except Exception as exc:
+            last_exc = exc
+
+    logger.warning("crew verifier failed (%s); returning draft marked unverified", last_exc)
+    return AgentOutcome(
+        value=Verification(
+            verified_answer=f"{draft}\n\n_(This answer could not be verified.)_",
+            unverified=True,
+        ),
+        degraded=True,
+        reason=f"crew-verifier: {type(last_exc).__name__}",
+        model_calls=calls,
+    )

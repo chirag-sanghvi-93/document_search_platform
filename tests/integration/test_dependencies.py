@@ -1,4 +1,4 @@
-"""E1-S3 and E1-S4 · Service acceptance criteria.
+"""Service acceptance criteria.
 
 These need real services. Run with `make test`; skipped by `make test-unit`.
 
@@ -50,7 +50,7 @@ async def test_all_three_serving_models_are_present() -> None:
 
 @pytest.mark.models
 async def test_embedding_dimension_matches_configuration() -> None:
-    """The assertion that must happen before E3 creates the chunks table.
+    """The assertion that must happen before the chunks table is created.
 
     ``vector(N)`` is fixed at table creation. A mismatch discovered after
     ingestion means dropping the column and re-embedding the whole corpus.

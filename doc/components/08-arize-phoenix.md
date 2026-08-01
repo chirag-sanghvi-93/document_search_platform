@@ -83,6 +83,76 @@ What must exist in Phoenix, accumulated across every component:
 **Seven prompts.** Each is design choice 5.8, and each is versioned independently — revising the
 contextualiser does not touch the verifier.
 
+### Input and output, per prompt
+
+Two independent chains, not seven independent calls — each prompt's output is what feeds the next.
+Field names below are the real ones, not paraphrased: `Plan`, `Sufficiency` and `Verification` in
+`app/engine/query/agents.py`, `ConversationSummary` in `app/shared/types.py`.
+
+**Read path — one question:**
+
+```mermaid
+flowchart TD
+    Q(["question + conversation_id"]) --> P
+
+    P["<b>planner</b>\nin: corpus_description, conversation_summary,\n    recent_turns, question\nout: Plan { intent, standalone_question, sub_questions }"]
+
+    P -- "sub_questions\n(fan-out, one call each,\nshared search budget)" --> R
+    P -- "standalone_question" --> S
+
+    R["<b>retrieval-specialist</b>\nin: sub_question, passages, attempt, max_attempts\nout: Sufficiency { sufficient, reasoning, new_query }"]
+    R -- "not sufficient →\nnew_query\n(retry, capped)" --> R
+    R -- "passages\n(accumulated pool)" --> S
+
+    S["<b>synthesizer</b>\nin: question, passages, conversation_summary\nout: draft answer text, [n] markers, NOT a dataclass"]
+    S -- "draft" --> V
+
+    V["<b>verifier</b>\nin: draft, passages\n⚠️ NEVER sees the plan or the reasoning\nout: Verification { verified_answer,\n    claims_retracted, claims_hedged, unverified }"]
+
+    V --> A(["verified_answer → citations.build() → response"])
+```
+
+⚠️ The verifier's input is deliberately narrow — `draft` and `passages` only, never the plan or the
+synthesizer's reasoning. Seeing why a claim was made is exactly what would let it accept a claim it
+has already justified to itself.
+
+**After the response — off the critical path:**
+
+```mermaid
+flowchart LR
+    E["turns evicted from the\nverbatim window"] --> C
+    Prior["previous ConversationSummary"] --> C
+    C["<b>conversation-summarizer</b>\nin: prior_summary, recent_turns\nout: ConversationSummary { parameters, topics,\n    declined, open_threads }"]
+    C --> M["merged summary, stored"]
+    M -. "next turn's\nconversation_summary" .-> P2(["planner + synthesizer,\nnext question"])
+```
+
+**Ingestion — one document:**
+
+```mermaid
+flowchart TD
+    Doc(["a PDF"]) --> Parse["Docling: text, tables,\nheading tree"]
+    Parse --> D
+
+    D["<b>document-summarizer</b>\nin: title, heading_tree, first_pages\nout: summary text\n⚠️ SKIPPED if the operator supplied a description"]
+
+    Op["operator-supplied description\n(optional, at upload)"] --> Fallback
+    D --> Fallback["document_summary =\nsummary OR description OR \"\""]
+
+    Fallback --> K
+    Parse --> Chunks["chunked text"]
+    Chunks --> K
+
+    K["<b>chunk-contextualizer</b>\nin: document_summary, heading_path, chunk_text\nout: one-sentence preamble\n(runs ONCE PER CHUNK — the highest-volume call)"]
+
+    K --> Em["embedding_text = preamble + chunk_text\n→ embedded"]
+    Chunks --> Dis["display_text = chunk_text, unmodified\n→ what a citation quotes"]
+```
+
+⚠️ **`document_summary` has a real fallback chain, not a guess** — `wdoc.summary or wdoc.description or
+""` in `app/engine/ingest/pipeline.py`. An operator who supplies a description at upload time overrides
+the generated summary outright; `document-summarizer` is never even called in that case.
+
 ---
 
 ## 4. Where it fits
@@ -102,6 +172,11 @@ INGESTION        manual spans, separate project              [#7]
 ---
 
 ## 5. Prompt lifecycle
+
+Two distinct processes, on two different clocks. **Startup** resolves whatever drifted between the
+bundled files and the registry while the container was down — it runs once. **Per-request resolution**
+is what every question and every document actually uses while the container is up — it runs constantly,
+against a cache, and degrades independently of startup ever having succeeded.
 
 ### Initialization, and a conflict worth resolving
 
@@ -125,6 +200,23 @@ prompt is pushed as a new version, and the production tag stays where it is.
 
 One exception: **if no production tag exists** — a fresh deployment — the first push sets it.
 Otherwise the system starts with no live prompts at all.
+
+```mermaid
+flowchart TD
+    A(["backend starts"]) --> B["for each of the 7 bundled prompts"]
+    B --> C{"content differs\nfrom production tag?"}
+    C -- "no" --> D["skip — no new version"]
+    C -- "yes" --> E{"a production tag\nexists at all?"}
+    E -- "yes\n(someone may have\nedited it in Phoenix)" --> F["push as a NEW version\ntag stays put — a human decides"]
+    E -- "no\n(fresh deployment)" --> G["push as v1\ntag it production immediately"]
+    D --> H(["ready to serve"])
+    F --> H
+    G --> H
+```
+
+⚠️ The branch that matters is **E**. A differing prompt is *never* auto-promoted once a tag exists —
+only pushed alongside it — precisely so a live edit made in the Phoenix interface is never silently
+overwritten by a redeploy.
 
 ### Fetch by tag, never by version number
 
@@ -167,6 +259,41 @@ An observability outage must not become an availability outage.
 cannot go there. It goes to stdout and to a health endpoint — because behaviour has silently changed.
 The system is now running bundled prompts that may differ from what was promoted, and nothing about
 the answers will look different.
+
+### Consumption — what actually happens per request
+
+Startup (above) reconciles the registry once. This is what runs on **every** chat question and
+**every** document ingested, whichever calls it — `app/api/chat.py` and
+`app/engine/ingest/pipeline.py` both go through the identical path:
+
+```mermaid
+flowchart TD
+    A(["a request or an ingestion job\nneeds a prompt"]) --> B["resolve_all()"]
+    B --> C{"cache younger\nthan the TTL\n(~60s)?"}
+    C -- "yes" --> D["return the cached snapshot\nno network call"]
+    C -- "no" --> E{"Phoenix\nreachable?"}
+    E -- "yes" --> F["fetch all 7 by TAG\n(production), not by version number"]
+    F --> G["refresh the cache\nwith this snapshot"]
+    E -- "no, or the fetch fails" --> H{"a cached snapshot\nexists at all?"}
+    H -- "yes" --> I["reuse the LAST cached snapshot\n— stale, not broken"]
+    H -- "no\n(cold start, Phoenix already down)" --> J["fall back to the\nBUNDLED file on disk"]
+    I --> K["mark degraded = True\nlog loudly (stdout + /health)"]
+    J --> K
+    D --> L(["one snapshot, pinned\nfor the whole request"])
+    G --> L
+    K --> L
+    L --> M["stamp prompt_versions on the\nroot span AND the message row"]
+```
+
+Three things this diagram is making concrete:
+
+- **Fetch by tag, not by version number** (§ above) is the box in the middle — promoting a prompt in
+  Phoenix takes effect on the *next* cache refresh, no code change
+- **Pin the version per request** is the funnel at the bottom: whichever branch was taken, the result
+  is one snapshot used for every one of the seven prompts in that request — never a mix of a fresh
+  planner and a stale verifier
+- **The fallback is two-tier, not one** — stale cache is preferred over the bundled file, because a
+  cache that was fresh a minute ago is closer to the truth than what shipped in the image
 
 ### Record which versions produced the answer
 

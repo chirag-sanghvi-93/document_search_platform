@@ -1,9 +1,7 @@
 """Celery application.
 
-⚠️ **Minimal by design at this stage.** E1 requires the worker container to reach a
-healthy state, which needs an importable Celery app — but the tasks themselves
-belong to E9-S5. This file establishes the configuration and the queues; the task
-definitions arrive with the epic that owns them.
+Configuration and queue routing live here; the task definitions themselves are in
+`app.tasks.ingestion`, imported below for its registration side effect.
 
 See doc/components/11-fastapi.md §5.
 """

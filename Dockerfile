@@ -29,16 +29,16 @@ RUN apt-get update \
 COPY pyproject.toml uv.lock* README.md ./
 
 # Base dependencies only. The heavy optional groups — docling, torch via
-# sentence-transformers, crewai, ragas — are installed by the EPIC that needs them,
-# via EXTRAS below.
+# sentence-transformers, crewai, ragas — are installed selectively via EXTRAS
+# below, one dependency group per capability the deployment actually needs.
 #
 # Three reasons, and the third is the real one:
 #   · a base image is ~200 MB rather than ~3 GB
-#   · rebuilds during E1–E3 take seconds, not minutes
-#   · a dependency problem surfaces in the epic that introduced it, rather than
-#     appearing on day one as an undifferentiated wall of resolution errors
+#   · a plain dependency-only rebuild takes seconds, not minutes
+#   · a dependency problem surfaces against the group that introduced it, rather
+#     than appearing on day one as an undifferentiated wall of resolution errors
 #
-# Build with extras when the epic arrives:
+# Build with the extras this deployment needs, e.g.:
 #   docker compose build --build-arg EXTRAS="--extra ingest" backend
 ARG EXTRAS=""
 RUN uv sync --no-install-project ${EXTRAS}

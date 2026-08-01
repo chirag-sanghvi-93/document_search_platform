@@ -38,6 +38,12 @@ The same rule as the previous phase: **a step ends in a demonstration, not a cla
 
 ### 2.1 Bundled prompts
 
+> For what each prompt actually takes in and returns — real field names, and how the seven chain
+> together across the read path and ingestion — see
+> [08-arize-phoenix.md §3](../components/08-arize-phoenix.md#3-the-prompt-inventory). Kept there, not
+> here: that is the design/reference doc and stays current as prompts change; this file is a record of
+> what was verified on the day it was built.
+
 **Steps**
 
 ```bash

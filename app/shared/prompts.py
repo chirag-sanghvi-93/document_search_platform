@@ -62,6 +62,10 @@ class ResolvedPrompt:
     template: str
     source: PromptSource
     variables: tuple[str, ...] = ()
+    #: One line, from the bundled file's frontmatter. Pushed to Phoenix as the
+    #: PROMPT-level description — the list view's "description" column reads
+    #: this, not the per-version description below.
+    description: str = ""
 
     def render(self, **variables: object) -> str:
         """Fill the template.
@@ -129,6 +133,7 @@ def _parse_bundled(path: Path) -> ResolvedPrompt:
         template=body,
         source="bundled",
         variables=variables,
+        description=fields.get("description", ""),
     )
 
 
@@ -246,14 +251,24 @@ class PromptRegistry:
 
         client = self._client
         assert client is not None
+        # ⚠️ TWO description fields, at two different levels, and the list view
+        # in the Phoenix UI reads the PROMPT-level one — `prompt_description`
+        # below — not this per-version description. Confirmed by inspecting
+        # `Prompts.create`'s real signature rather than assumed: every prompt
+        # showed "--" in the description column despite each bundled file
+        # carrying one, because only the version-level field was ever set.
         version = PromptVersion(
             [{"role": "user", "content": prompt.template}],
             model_name=self._settings.prompt_tag,
             model_provider="OLLAMA",
             template_format="F_STRING",
-            description=f"Pushed from bundled prompts/{name}.md",
+            description=prompt.description or f"Pushed from bundled prompts/{name}.md",
         )
-        created = client.prompts.create(name=name, version=version)  # type: ignore[attr-defined]
+        created = client.prompts.create(  # type: ignore[attr-defined]
+            name=name,
+            version=version,
+            prompt_description=prompt.description or None,
+        )
         client.prompts.tags.create(  # type: ignore[attr-defined]
             prompt_version_id=created.id, name=self._settings.prompt_tag
         )

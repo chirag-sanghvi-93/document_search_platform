@@ -202,8 +202,8 @@ class RetrievalSettings(BaseModel):
     keep_quality: int = 5
     keep_fast: int = 3
 
-    # PROVISIONAL — fitted on the calibration split in E10-S6, never on the
-    # evaluation split. See doc/components/09-ragas.md.
+    # PROVISIONAL — the design's unfitted guess, not yet fit against this
+    # corpus's own calibration split. See doc/components/09-ragas.md.
     keep_floor: float = 0.3
     insufficient_low: float = 0.3
     sufficient_high: float = 0.7

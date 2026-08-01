@@ -1,4 +1,4 @@
-"""E1-S2 · Configuration.
+"""Configuration.
 
 GIVEN  a setting absent from the environment
 WHEN   the application starts

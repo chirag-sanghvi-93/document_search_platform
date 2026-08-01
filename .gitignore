@@ -14,6 +14,10 @@ htmlcov/
 # Environment
 .env
 
+# Raw screen recordings — only the cut/compressed demo assets are committed
+doc/media/*raw*.mov
+doc/media/Screen Recording*
+
 # Corpus and derived artefacts.
 # Documents stay on the host and never enter a build layer or a registry —
 # confidential corpora must not be committed. Fixtures under tests/ ARE committed.

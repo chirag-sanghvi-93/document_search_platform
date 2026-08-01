@@ -52,7 +52,7 @@ ps:
 # Ordered by when each epic first needs it, so they can be pulled one at a time
 # rather than as one 8.7 GB download.
 models:                        ## Pull all three models into the native Ollama
-	ollama pull bge-m3         # 1.2 GB — needed by E3 fixtures and E5 retrieval
+	ollama pull bge-m3         # 1.2 GB — embedding model, used by fixtures and retrieval
 	ollama pull qwen3:4b       # 2.5 GB — summarisation and verification
 	ollama pull qwen2.5:3b     # 1.9 GB — contextualisation ONLY, must be non-reasoning
 	ollama pull qwen2.5:7b     # 4.7 GB — planner, retrieval agent, synthesizer
@@ -64,10 +64,10 @@ migrate:                       ## Apply migrations up to head — idempotent, sa
 
 # ------------------------------------------------------------------------ data
 
-seed:                          ## Load the deterministic fixture corpus  [E3-S7]
+seed:                          ## Load the deterministic fixture corpus
 	uv run python -m app.shared.store.seed
 
-ingest:                        ## Ingest data/raw into COLLECTION  [E4-S7]
+ingest:                        ## Ingest data/raw into COLLECTION
 	uv run python -m app.engine.ingest.cli --collection $(or $(COLLECTION),default)
 
 clean:

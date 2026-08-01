@@ -1,4 +1,4 @@
-"""E1-S6 · Health endpoints.
+"""Health endpoints.
 
 GIVEN  the backend is running and Postgres is stopped
 WHEN   /health is called

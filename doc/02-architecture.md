@@ -66,7 +66,7 @@ flowchart TB
         redis[("<b>Redis</b><br/><i>task queue — no result backend</i><br/>:6379")]
         db[("<b>PostgreSQL + pgvector</b><br/><i>chunks · vectors · memory<br/>documents · runs</i><br/>:5432")]
         phoenix["<b>Arize Phoenix</b><br/><i>prompts · traces</i><br/>:6006"]
-        ollama["<b>Ollama</b><br/><i>bge-m3 · qwen3:8b · qwen3:4b</i><br/>:11434"]
+        ollama["<b>Ollama</b><br/><i>bge-m3 · qwen2.5:7b · qwen2.5:3b · qwen3:4b</i><br/>:11434"]
     end
 
     user -->|"HTTPS"| ui
@@ -240,7 +240,7 @@ flowchart TB
 
     chunk --> ctxcache{"preamble<br/>cached?"}
     ctxcache -->|yes| loadctx["load from<br/><i>data/preambles/</i>"]
-    ctxcache -->|no| contextualise["<b>5</b> contextualise — <i>per CHUNK</i><br/>qwen3:4b"]
+    ctxcache -->|no| contextualise["<b>5</b> contextualise — <i>per CHUNK</i><br/>qwen2.5:3b"]
     contextualise --> writectx["write preamble cache"]
 
     loadctx --> assemble
@@ -324,13 +324,13 @@ flowchart TB
 
     search --> signal{"top score"}
     signal -->|"clearly sufficient"| collect
-    signal -->|"ambiguous or low"| agent["<b>2 · RETRIEVAL AGENT</b> — qwen3:8b<br/><i>judge → reformulate → retry</i><br/>≤ 3 iterations"]
+    signal -->|"ambiguous or low"| agent["<b>2 · RETRIEVAL AGENT</b> — qwen2.5:7b<br/><i>judge → reformulate → retry</i><br/>≤ 3 iterations"]
     agent --> collect
 
     collect["dedupe across sub-questions<br/>then number [1..N]"]
 
-    collect --> synth["<b>3 · SYNTHESIZER</b> — qwen3:8b<br/><i>display_text only → draft with [n]</i>"]
-    synth --> verify["<b>4 · VERIFIER</b> — qwen3:4b<br/><i>ground every claim; revise or retract</i>"]
+    collect --> synth["<b>3 · SYNTHESIZER</b> — qwen2.5:7b<br/><i>display_text only → draft with [n]</i>"]
+    synth --> verify["<b>4 · VERIFIER</b> — qwen2.5:7b<br/><i>ground every claim; revise or retract</i>"]
 
     verify --> cite["parse → validate → dedupe by (file,page)<br/>→ renumber → render<br/><i>no model involved</i>"]
 
@@ -338,10 +338,8 @@ flowchart TB
     persist --> out(["stream answer + citations"])
 
     classDef model fill:#DFF0F1,stroke:#0E7C86,color:#0A5C64
-    classDef small fill:#E0F0E7,stroke:#2C7A50,color:#2C7A50
     classDef term fill:#ECEFF2,stroke:#B9C4CC
-    class planner,agent,synth model
-    class verify small
+    class planner,agent,synth,verify model
     class q,out,decline1 term
 ```
 
@@ -435,13 +433,19 @@ does not apply. That is a one-flag change, not a rewrite.
 
 | Phase | Resident models | Total |
 |---|---|---|
-| Ingestion | bge-m3 + qwen3:4b | ~3.7 GB |
-| Serving | bge-m3 + qwen3:8b + qwen3:4b | ~8.7 GB |
+| Ingestion | bge-m3 + qwen3:4b + qwen2.5:3b | ~5.6 GB |
+| Serving | bge-m3 + qwen2.5:7b | ~5.9 GB |
 | Evaluation *(offline)* | bge-m3 + judge model | ~6 GB |
 
-Roughly 11 GB is available after Docker. **Ingestion's models are a subset of serving's**, so the two
-can run concurrently at no additional memory cost — they contend for compute only. Evaluation never
-overlaps with serving, being a development activity.
+Roughly 11 GB is available after Docker. **⚠️ Ingestion and serving no longer share a model set** —
+an earlier design had `qwen3:4b` doing double duty in both phases, which made the two free to run
+concurrently. Splitting `contextualiser_model` (`qwen2.5:3b`) and `answering_model`/`verifier_model`
+(`qwen2.5:7b`) apart — the change that fixed the read path's latency, see `app/shared/config.py` —
+means ingestion and serving now contend for VRAM, not just compute, if run at the same time: four
+distinct models is ~10.3 GB, close to the full budget. `OLLAMA_MAX_LOADED_MODELS=2` keeps only the
+two serving models resident by default; ingestion's models load on demand and are evicted rather than
+kept warm, which is what keeps this workable rather than a standing cost. Evaluation never overlaps
+with serving, being a development activity.
 
 Outside Ollama, the containers themselves cost:
 
